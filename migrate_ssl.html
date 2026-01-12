@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vue + Flask Nginx HTTPS 遷移指南</title>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --accent-color: #42b983; /* Vue Green */
+            --code-bg: #f6f8fa;
+            --border-color: #e1e4e8;
+            --text-color: #24292e;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+            background-color: #fff;
+        }
+
+        h1 {
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 0.5rem;
+            color: var(--primary-color);
+        }
+
+        h2 {
+            margin-top: 2rem;
+            color: var(--primary-color);
+            display: flex;
+            align-items: center;
+        }
+
+        h2::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 24px;
+            background-color: var(--accent-color);
+            margin-right: 10px;
+            border-radius: 4px;
+        }
+
+        p {
+            margin-bottom: 1rem;
+        }
+
+        code {
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+            background-color: rgba(27, 31, 35, 0.05);
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-size: 85%;
+        }
+
+        pre {
+            background-color: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        .note {
+            background-color: #fff3cd;
+            border-left: 5px solid #ffc107;
+            padding: 1rem;
+            margin: 1rem 0;
+            border-radius: 4px;
+        }
+
+        .steps {
+            counter-reset: step;
+        }
+
+        .step-item {
+            margin-bottom: 2rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25em 0.4em;
+            font-size: 75%;
+            font-weight: 700;
+            line-height: 1;
+            text-align: center;
+            white-space: nowrap;
+            vertical-align: baseline;
+            border-radius: 0.25rem;
+            background-color: var(--primary-color);
+            color: #fff;
+        }
+        
+        .badge-ip { background-color: #6f42c1; }
+    </style>
+</head>
+<body>
+
+    <h1>Vue + Flask + Nginx HTTPS 遷移指南</h1>
+    
+    <p>本文件說明如何將運行於 <span class="badge badge-ip">16.146.141.237</span> 的 Vue2 前端與 Flask 後端，透過 Nginx 反向代理配置為 HTTPS 環境。</p>
+    
+    <div class="note">
+        <strong>注意：</strong> 本教學使用 <strong>OpenSSL 自簽憑證</strong>。由於是針對 IP 位置而非網域簽署，瀏覽器會顯示「不安全」的警告，這是正常現象，點擊「進階 -> 繼續前往」即可。
+    </div>
+
+    <div class="steps">
+        
+        <div class="step-item">
+            <h2>第一步：生成 SSL 自簽憑證</h2>
+            <p>在伺服器上建立存放憑證的目錄，並生成效期一年的憑證。</p>
+            <pre>
+# 1. 建立目錄
+sudo mkdir -p /etc/nginx/ssl
+
+# 2. 生成私鑰與憑證
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/nginx/ssl/nginx.key \
+    -out /etc/nginx/ssl/nginx.crt</pre>
+            <p>執行後系統會詢問資訊，請在 <code>Common Name</code> 欄位填入您的 IP：<code>16.146.141.237</code>，其餘欄位可選填。</p>
+        </div>
+
+        <div class="step-item">
+            <h2>第二步：配置 Nginx</h2>
+            <p>修改 Nginx 設定檔（通常位於 <code>/etc/nginx/sites-available/default</code>），設定強制 HTTPS 跳轉與反向代理。</p>
+            <pre>
+# 1. HTTP -> HTTPS 強制轉址
+server {
+    listen 80;
+    server_name 16.146.141.237;
+
+    return 301 https://$host$request_uri;
+}
+
+# 2. HTTPS 主配置
+server {
+    listen 443 ssl;
+    server_name 16.146.141.237;
+
+    # SSL 憑證路徑
+    ssl_certificate /etc/nginx/ssl/nginx.crt;
+    ssl_certificate_key /etc/nginx/ssl/nginx.key;
+
+    # SSL 安全性優化
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # --- 前端 (Vue) ---
+    location / {
+        # 請確認這是您 npm run build 後的 dist 路徑
+        root /var/www/html/dist; 
+        index index.html;
+        
+        # 解決 Vue Router History Mode 重新整理 404 問題
+        try_files $uri $uri/ /index.html;
+    }
+
+    # --- 後端 (Flask API) ---
+    # 將 /api 開頭的請求轉發給 Flask (Port 5000)
+    location /api/ {
+        proxy_pass http://127.0.0.1:5000/; 
+        
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}</pre>
+            <p>設定完成後，請測試並重新載入 Nginx：</p>
+            <pre>sudo nginx -t && sudo systemctl reload nginx</pre>
+        </div>
+
+        <div class="step-item">
+            <h2>第三步：修改 Vue 前端代碼</h2>
+            <p>這是最關鍵的一步。由於網頁已變為 HTTPS，不能再直接呼叫 HTTP 的 5000 port，必須改用<strong>相對路徑</strong>透過 Nginx 轉發。</p>
+            <p>請找到您設定 <code>axios</code> 或 API 請求的地方：</p>
+            
+            <pre>
+// ❌ 錯誤寫法 (原本的寫法)
+// axios.defaults.baseURL = 'http://16.146.141.237:5000';
+
+// ✅ 正確寫法 (改為相對路徑)
+// Nginx 會自動將 /api 對應到後端的 :5000
+axios.defaults.baseURL = '/api'; </pre>
+
+            <p>修改完畢後，請務必重新打包專案：</p>
+            <pre>npm run build</pre>
+        </div>
+
+        <div class="step-item">
+            <h2>第四步：防火牆設定</h2>
+            <p>確保伺服器允許外部存取 443 埠口。</p>
+            <pre>sudo ufw allow 443</pre>
+            <p>如果是雲端主機 (如 AWS/GCP)，請記得在安全群組 (Security Group) 新增 Inbound Rule 允許 HTTPS。</p>
+        </div>
+
+    </div>
+
+    <hr>
+    <footer style="text-align: center; color: #666; font-size: 0.9rem; margin-top: 2rem;">
+        <p>Generated by Gemini AI Assistant</p>
+    </footer>
+
+</body>
+</html>
