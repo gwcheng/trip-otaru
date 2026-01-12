@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel VSTO Add-in 動態 Ribbon 實作教學</title>
+    <style>
+        body {
+            font-family: "Segoe UI", "Microsoft JhengHei", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        h1 {
+            color: #217346; /* Excel Green */
+            border-bottom: 2px solid #217346;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #005a9e;
+            margin-top: 30px;
+            border-left: 5px solid #005a9e;
+            padding-left: 10px;
+        }
+        h3 {
+            color: #444;
+            margin-top: 20px;
+        }
+        p, li {
+            margin-bottom: 10px;
+        }
+        pre {
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 0.9em;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        code {
+            font-family: Consolas, "Courier New", monospace;
+            background-color: #e0e0e0;
+            padding: 2px 4px;
+            border-radius: 3px;
+            color: #c7254e;
+        }
+        .note {
+            background-color: #fff3cd;
+            border-left: 6px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .file-name {
+            font-weight: bold;
+            color: #666;
+            display: block;
+            margin-bottom: 5px;
+        }
+        .keyword { color: #569cd6; }
+        .string { color: #ce9178; }
+        .comment { color: #6a9955; }
+        .class { color: #4ec9b0; }
+    </style>
+</head>
+<body>
+
+    <h1>Excel VSTO Add-in：動態讀取設定檔產生 Ribbon 選單</h1>
+    
+    <p>本教學說明如何在 C# Excel VSTO 專案中，讀取指定的 Config 文字檔（如 X 槽），並根據內容動態產生對應數量的群組（Group）、下拉選單（DropDown）與按鈕。</p>
+
+    <div class="note">
+        <strong>核心概念：</strong> 由於 Visual Studio 的「視覺化設計工具 (Ribbon Designer)」無法動態增減群組，我們必須改用 <code>Ribbon (XML)</code> 的方式，透過 C# 程式碼動態組裝 XML 字串來定義介面。
+    </div>
+
+    <h2>步驟 1：準備設定檔</h2>
+    <p>請在您的測試路徑（例如 <code>X:\Data\Config.txt</code>）建立以下格式的文字檔。請確保編碼為 <strong>UTF-8</strong>。</p>
+    
+    <span class="file-name">檔案內容範例：Config.txt</span>
+    <pre>
+[Stage1]
+func1
+func2
+func3
+
+[Stage2]
+func4
+func5
+func6
+
+[Stage3]
+func7
+func8
+func9</pre>
+
+    <h2>步驟 2：建立 VSTO 專案並加入 Ribbon XML</h2>
+    <ol>
+        <li>開啟 Visual Studio，建立一個新的 <strong>Excel VSTO Add-in</strong> 專案。</li>
+        <li>在「方案總管」專案名稱上按右鍵 &rarr; <strong>加入</strong> &rarr; <strong>新增項目</strong>。</li>
+        <li>選擇 <strong>功能區 (XML)</strong> (Ribbon (XML))。</li>
+        <li>將其命名為 <code>DynamicRibbon.cs</code>。</li>
+        <li><span style="color:red">注意：</span>系統會產生 <code>.cs</code> 與 <code>.xml</code> 檔。請<strong>忽略並不要編輯</strong>那個 <code>.xml</code> 檔，因為我們將在程式碼中動態生成 XML。</li>
+    </ol>
+
+    <h2>步驟 3：實作核心邏輯代碼</h2>
+    <p>請將 <code>DynamicRibbon.cs</code> 的內容完全替換為以下程式碼。這包含了資料模型、XML 建構器以及事件處理邏輯。</p>
+
+    <span class="file-name">檔案：DynamicRibbon.cs</span>
+    <pre>
+<span class="keyword">using</span> System;
+<span class="keyword">using</span> System.Collections.Generic;
+<span class="keyword">using</span> System.IO;
+<span class="keyword">using</span> System.Runtime.InteropServices;
+<span class="keyword">using</span> System.Text;
+<span class="keyword">using</span> System.Windows.Forms;
+<span class="keyword">using</span> Microsoft.Office.Core;
+<span class="keyword">using</span> Excel = Microsoft.Office.Interop.Excel;
+
+<span class="keyword">namespace</span> <span class="class">YourProjectName</span> <span class="comment">// ★請確認這裡的 namespace 與你的專案一致</span>
+{
+    <span class="comment">// 定義資料結構</span>
+    <span class="keyword">public class</span> <span class="class">StageGroup</span>
+    {
+        <span class="keyword">public string</span> GroupName { <span class="keyword">get</span>; <span class="keyword">set</span>; }
+        <span class="keyword">public</span> List&lt;<span class="keyword">string</span>&gt; Macros { <span class="keyword">get</span>; <span class="keyword">set</span>; }
+        <span class="keyword">public string</span> SelectedMacro { <span class="keyword">get</span>; <span class="keyword">set</span>; }
+
+        <span class="keyword">public</span> StageGroup()
+        {
+            Macros = <span class="keyword">new</span> List&lt;<span class="keyword">string</span>&gt;();
+        }
+    }
+
+    [<span class="class">ComVisible</span>(<span class="keyword">true</span>)]
+    <span class="keyword">public class</span> <span class="class">DynamicRibbon</span> : <span class="class">IRibbonExtensibility</span>
+    {
+        <span class="keyword">private</span> IRibbonUI _ribbon;
+        <span class="keyword">private</span> List&lt;StageGroup&gt; _stages;
+        
+        <span class="comment">// 設定檔路徑 (建議使用 UNC 路徑避免磁碟機未掛載問題)</span>
+        <span class="keyword">private const string</span> FilePath = <span class="string">@"X:\Data\Config.txt"</span>; 
+
+        <span class="keyword">public</span> DynamicRibbon()
+        {
+            _stages = <span class="keyword">new</span> List&lt;StageGroup&gt;();
+        }
+
+        <span class="comment">#region IRibbonExtensibility 成員</span>
+
+        <span class="comment">// 這是最重要的方法：Excel 啟動時會呼叫此方法取得介面定義 XML</span>
+        <span class="keyword">public string</span> GetCustomUI(<span class="keyword">string</span> ribbonID)
+        {
+            <span class="comment">// 1. 讀取設定檔資料</span>
+            LoadDataFromFile();
+
+            <span class="comment">// 2. 開始組裝 XML 字串</span>
+            StringBuilder xml = <span class="keyword">new</span> StringBuilder();
+            xml.Append(<span class="string">@"&lt;customUI xmlns=""http://schemas.microsoft.com/office/2009/07/customui"" onLoad=""Ribbon_Load""&gt;"</span>);
+            xml.Append(<span class="string">@"  &lt;ribbon&gt;"</span>);
+            xml.Append(<span class="string">@"    &lt;tabs&gt;"</span>);
+            xml.Append(<span class="string">@"      &lt;tab id=""tabCustom"" label=""自動化工具""&gt;"</span>);
+
+            <span class="comment">// 3. 根據讀到的 Stage 數量動態產生 Group</span>
+            <span class="keyword">for</span> (<span class="keyword">int</span> i = 0; i &lt; _stages.Count; i++)
+            {
+                <span class="keyword">var</span> stage = _stages[i];
+                <span class="keyword">string</span> groupId = <span class="string">$"group_{i}"</span>;
+                <span class="keyword">string</span> ddId = <span class="string">$"dd_{i}"</span>;
+                <span class="keyword">string</span> btnExecId = <span class="string">$"btnExec_{i}"</span>;
+                <span class="keyword">string</span> btnRefreshId = <span class="string">"btnRefresh"</span>;
+
+                <span class="comment">// 建立 Group</span>
+                xml.Append(<span class="string">$@"&lt;group id=""{groupId}"" label=""{stage.GroupName}""&gt;"</span>);
+
+                <span class="comment">// 3.1 僅在第一個 Group 加入 Refresh 按鈕</span>
+                <span class="keyword">if</span> (i == 0)
+                {
+                    xml.Append(<span class="string">$@"&lt;button id=""{btnRefreshId}"" label=""重新整理"" size=""large"" imageMso=""Refresh"" onAction=""OnRefreshClick""/&gt;"</span>);
+                    xml.Append(<span class="string">@"&lt;separator id=""sep1"" /&gt;"</span>);
+                }
+
+                <span class="comment">// 3.2 加入下拉選單 (使用 Callbacks 動態給值)</span>
+                <span class="comment">// tag 屬性存 index，方便事件觸發時知道是第幾個 group</span>
+                xml.Append(<span class="string">$@"&lt;dropDown id=""{ddId}"" label=""選擇功能"" tag=""{i}"" 
+                                getItemCount=""GetItemCount"" 
+                                getItemLabel=""GetItemLabel"" 
+                                getSelectedItemIndex=""GetSelectedItemIndex""
+                                onAction=""OnDropDownChange""/&gt;"</span>);
+
+                <span class="comment">// 3.3 加入執行按鈕</span>
+                xml.Append(<span class="string">$@"&lt;button id=""{btnExecId}"" label=""Execute"" tag=""{i}"" imageMso=""PlayMacro"" onAction=""OnExecuteClick""/&gt;"</span>);
+
+                xml.Append(<span class="string">@"&lt;/group&gt;"</span>);
+            }
+
+            xml.Append(<span class="string">@"      &lt;/tab&gt;"</span>);
+            xml.Append(<span class="string">@"    &lt;/tabs&gt;"</span>);
+            xml.Append(<span class="string">@"  &lt;/ribbon&gt;"</span>);
+            xml.Append(<span class="string">@"&lt;/customUI&gt;"</span>);
+
+            <span class="keyword">return</span> xml.ToString();
+        }
+
+        <span class="comment">#endregion</span>
+
+        <span class="comment">#region 檔案讀取邏輯</span>
+        <span class="keyword">private void</span> LoadDataFromFile()
+        {
+            _stages.Clear();
+            <span class="keyword">if</span> (!File.Exists(FilePath))
+            {
+                <span class="keyword">var</span> errorGroup = <span class="keyword">new</span> StageGroup { GroupName = <span class="string">"錯誤"</span> };
+                errorGroup.Macros.Add(<span class="string">"找不到設定檔"</span>);
+                _stages.Add(errorGroup);
+                <span class="keyword">return</span>;
+            }
+
+            <span class="keyword">string</span>[] lines = File.ReadAllLines(FilePath, Encoding.UTF8);
+            StageGroup currentGroup = <span class="keyword">null</span>;
+
+            <span class="keyword">foreach</span> (<span class="keyword">string</span> line <span class="keyword">in</span> lines)
+            {
+                <span class="keyword">string</span> text = line.Trim();
+                <span class="keyword">if</span> (<span class="keyword">string</span>.IsNullOrEmpty(text)) <span class="keyword">continue</span>;
+
+                <span class="keyword">if</span> (text.StartsWith(<span class="string">"["</span>) && text.EndsWith(<span class="string">"]"</span>))
+                {
+                    currentGroup = <span class="keyword">new</span> StageGroup();
+                    currentGroup.GroupName = text.Trim(<span class="string">'['</span>, <span class="string">']'</span>);
+                    _stages.Add(currentGroup);
+                }
+                <span class="keyword">else</span>
+                {
+                    <span class="keyword">if</span> (currentGroup != <span class="keyword">null</span>)
+                    {
+                        currentGroup.Macros.Add(text);
+                        <span class="comment">// 預設選取第一個</span>
+                        <span class="keyword">if</span> (<span class="keyword">string</span>.IsNullOrEmpty(currentGroup.SelectedMacro))
+                            currentGroup.SelectedMacro = text;
+                    }
+                }
+            }
+        }
+        <span class="comment">#endregion</span>
+
+        <span class="comment">#region Ribbon Callbacks (事件處理)</span>
+
+        <span class="keyword">public void</span> Ribbon_Load(IRibbonUI ribbonUI)
+        {
+            <span class="keyword">this</span>._ribbon = ribbonUI;
+        }
+
+        <span class="comment">// 下拉選單：總共有幾個項目？</span>
+        <span class="keyword">public int</span> GetItemCount(IRibbonControl control)
+        {
+            <span class="keyword">int</span> index = <span class="keyword">int</span>.Parse(control.Tag); 
+            <span class="keyword">if</span> (index &lt; _stages.Count)
+                <span class="keyword">return</span> _stages[index].Macros.Count;
+            <span class="keyword">return</span> 0;
+        }
+
+        <span class="comment">// 下拉選單：取得第 itemIndex 個項目的文字</span>
+        <span class="keyword">public string</span> GetItemLabel(IRibbonControl control, <span class="keyword">int</span> itemIndex)
+        {
+            <span class="keyword">int</span> groupIndex = <span class="keyword">int</span>.Parse(control.Tag);
+            <span class="keyword">return</span> _stages[groupIndex].Macros[itemIndex];
+        }
+
+        <span class="comment">// 下拉選單：取得目前選中的索引</span>
+        <span class="keyword">public int</span> GetSelectedItemIndex(IRibbonControl control)
+        {
+            <span class="keyword">int</span> groupIndex = <span class="keyword">int</span>.Parse(control.Tag);
+            <span class="keyword">var</span> group = _stages[groupIndex];
+            <span class="keyword">return</span> group.Macros.IndexOf(group.SelectedMacro);
+        }
+
+        <span class="comment">// 當使用者改變下拉選單時</span>
+        <span class="keyword">public void</span> OnDropDownChange(IRibbonControl control, <span class="keyword">string</span> selectedId, <span class="keyword">int</span> selectedIndex)
+        {
+            <span class="keyword">int</span> groupIndex = <span class="keyword">int</span>.Parse(control.Tag);
+            _stages[groupIndex].SelectedMacro = _stages[groupIndex].Macros[selectedIndex];
+        }
+
+        <span class="comment">// 執行按鈕 (Execute)</span>
+        <span class="keyword">public void</span> OnExecuteClick(IRibbonControl control)
+        {
+            <span class="keyword">int</span> groupIndex = <span class="keyword">int</span>.Parse(control.Tag);
+            <span class="keyword">string</span> macroName = _stages[groupIndex].SelectedMacro;
+
+            <span class="keyword">if</span> (<span class="keyword">string</span>.IsNullOrEmpty(macroName)) <span class="keyword">return</span>;
+
+            <span class="keyword">try</span>
+            {
+                <span class="comment">// 執行 Excel 巨集</span>
+                Globals.ThisAddIn.Application.Run(macroName);
+            }
+            <span class="keyword">catch</span> (Exception ex)
+            {
+                MessageBox.Show(<span class="string">$"執行 '{macroName}' 失敗: {ex.Message}"</span>);
+            }
+        }
+
+        <span class="comment">// 重新整理按鈕 (Refresh)</span>
+        <span class="keyword">public void</span> OnRefreshClick(IRibbonControl control)
+        {
+            <span class="keyword">int</span> oldStageCount = _stages.Count;
+            LoadDataFromFile(); <span class="comment">// 重新讀檔</span>
+
+            <span class="keyword">if</span> (_stages.Count != oldStageCount)
+            {
+                MessageBox.Show(<span class="string">"偵測到 Stage 數量變更，請重新啟動 Excel 以套用新的介面結構。"</span>, <span class="string">"提示"</span>);
+            }
+            <span class="keyword">else</span>
+            {
+                <span class="comment">// 若數量沒變，僅重新繪製內容 (更新下拉選單項目)</span>
+                _ribbon.Invalidate(); 
+                MessageBox.Show(<span class="string">"設定已更新！"</span>);
+            }
+        }
+        <span class="comment">#endregion</span>
+    }
+}
+</pre>
+
+    <h2>步驟 4：掛載 Ribbon</h2>
+    <p>最後，必須告訴 Excel 使用我們自訂的 Ribbon 類別。請打開 <code>ThisAddIn.cs</code>，並加入 override 方法。</p>
+
+    <span class="file-name">檔案：ThisAddIn.cs</span>
+    <pre>
+<span class="keyword">public partial class</span> <span class="class">ThisAddIn</span>
+{
+    <span class="keyword">private void</span> ThisAddIn_Startup(<span class="keyword">object</span> sender, System.EventArgs e)
+    {
+    }
+
+    <span class="keyword">private void</span> ThisAddIn_Shutdown(<span class="keyword">object</span> sender, System.EventArgs e)
+    {
+    }
+
+    <span class="comment">// ★加入這段程式碼來覆寫預設的 Ribbon 載入行為</span>
+    <span class="keyword">protected override</span> Microsoft.Office.Core.IRibbonExtensibility CreateRibbonExtensibilityObject()
+    {
+        <span class="keyword">return new</span> DynamicRibbon();
+    }
+
+    <span class="comment">#region VSTO 產生的程式碼</span>
+    <span class="keyword">private void</span> InternalStartup()
+    {
+        <span class="keyword">this</span>.Startup += <span class="keyword">new</span> System.EventHandler(ThisAddIn_Startup);
+        <span class="keyword">this</span>.Shutdown += <span class="keyword">new</span> System.EventHandler(ThisAddIn_Shutdown);
+    }
+    <span class="comment">#endregion</span>
+}
+</pre>
+
+    <h2>功能說明與限制</h2>
+    <ul>
+        <li><strong>動態生成：</strong> 程式啟動時會解析 <code>GetCustomUI</code> 中的 XML 迴圈，若設定檔有 3 個 Stage，就會產生 3 個 Group。</li>
+        <li><strong>Tag 屬性：</strong> 我們在 XML 中使用 <code>tag="{i}"</code> 來標記每個控制項屬於第幾個 Group，這樣所有按鈕共用同一個 <code>OnExecuteClick</code> 事件時，就能分辨要執行哪一個 Group 的巨集。</li>
+        <li><strong>重新整理 (Refresh)：</strong>
+            <ul>
+                <li>若只是修改下拉選單的內容（例如 func1 改成 func_new），點擊 Refresh 即可立即更新。</li>
+                <li>若<strong>新增或刪除 Stage</strong>（改變 Group 數量），由於 Ribbon XML 架構是在 Excel 啟動時決定的，必須<strong>關閉並重啟 Excel</strong> 才會生效。</li>
+            </ul>
+        </li>
+    </ul>
+
+</body>
+</html>
